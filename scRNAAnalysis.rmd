@@ -1,0 +1,250 @@
+---
+title: "scRNA_Analysis"
+author: "Gayathri Thillaiyampalam"
+date: "9/10/2023"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### This analysis contains the following steps
+- Loading Data
+- Pre-processing
+- Normalisation of raw counts
+- Scaling the data
+- PCA-transformation 
+- Determine dimensionality
+- Cluster the cells
+- UMAP
+- Differential Analysis
+
+   1.Perform differential expression analysis by comparing two clusters.
+   2. Perform differential expression analysis of one cluster against the rest of        the cells.
+   3. Perform differential expression analysis of two clusters defined as squares        (minX1, maxX1, minY1, maxY1 and minX2, maxX2, minY2, maxY2) where the x and         y are the axial coordinates of UMAP_1 and UMAP_2.
+
+### Speed over data accuracy 
+These analyses must prioritize speed over data accuracy. The computation time should be as fast as possible. While accuracy is important, the primary goal is to obtain results in a timely manner, and the results should still be plausible.
+
+1.Following approaches are used to increase the speed of the differential analysis.
+
+  - Pre-filter of samples
+  - Sub-sampling
+
+2.Following alternative algorithms are implemented to increase the computation time required for clustering (as recommended in “Orchestrating Single-Cell Analysis with Bioconductor” book)
+
+  - Fast approximation using approximate search instead of exact neighbour search
+  - Singular value decomposition
+
+Other recommendations
+
+  - Parallelization
+  - File-backed matrix representation instead of in-memory representations
+
+3.Simply save rds object to avoid running computationally intensive steps again and again.However, this may not be ideal for an interactive interface.
+
+
+```{r install Bioconducter packages, include=FALSE}
+#Run only once
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+#    install.packages("BiocManager")
+
+#BiocManager::install("BiocNeighbors")
+#BiocManager::install("scran")
+#BiocManager::install("scater")
+#BiocManager::install("BiocSingular")
+```
+
+```{r load packages, include=FALSE}
+
+library(dplyr)
+library(Seurat)
+library(patchwork)
+library(umap)
+
+library(scran)
+library(BiocNeighbors)
+library(scater)
+library(BiocSingular)
+```
+
+- Loading Data
+```{r load data, echo=TRUE}
+# Load the PBMC dataset
+pbmc.data <- Read10X(data.dir =  "scRNAData/filtered_gene_bc_matrices/hg19/")
+# Initialize the Seurat object with the raw (non-normalized data).
+pbmc <- CreateSeuratObject(counts = pbmc.data, project = "pbmc3k", min.cells = 3, min.features = 200)
+pbmc
+```
+- Pre-Processing
+```{r pre-processing, echo=TRUE}
+# The [[ operator can add columns to object metadata. This is a great place to stash QC stats
+pbmc[["percent.mt"]] <- PercentageFeatureSet(pbmc, pattern = "^MT-")
+# Visualize QC metrics as a violin plot
+VlnPlot(pbmc, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+# FeatureScatter is typically used to visualize feature-feature relationships, but can be used
+# for anything calculated by the object, i.e. columns in object metadata, PC scores etc.
+
+plot1 <- FeatureScatter(pbmc, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(pbmc, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+```
+
+- Normalisation of raw counts
+```{r Normalising the data, echo=TRUE}
+pbmc <- NormalizeData(pbmc, normalization.method = "LogNormalize", scale.factor = 10000)
+#pbmc <- NormalizeData(pbmc)
+```
+```{r Feature selection, include=FALSE}
+pbmc <- FindVariableFeatures(pbmc, selection.method = "vst", nfeatures = 2000)
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(pbmc), 10)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(pbmc)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot1 + plot2
+```
+
+- Scaling the data
+```{r Scaling the data, echo=TRUE}
+all.genes <- rownames(pbmc)
+pbmc <- ScaleData(pbmc, features = all.genes)
+#To scale only the features selected
+pbmc <- ScaleData(pbmc)
+```
+- PCA-transformation 
+```{r Linear dimension reduction, echo=TRUE}
+pbmc <- RunPCA(pbmc, features = VariableFeatures(object = pbmc))
+# Examine and visualize PCA results a few different ways
+print(pbmc[["pca"]], dims = 1:5, nfeatures = 5)
+DimPlot(pbmc, reduction = "pca")
+DimHeatmap(pbmc, dims = 1, cells = 500, balanced = TRUE)
+#DimHeatmap(pbmc, dims = 1:15, cells = 500, balanced = TRUE)
+```
+- Determine dimensionality
+```{r Determine dimensionality, echo=TRUE}
+# NOTE: This process can take a long time for big datasets, comment out for expediency. More approximate techniques such as those implemented in ElbowPlot() can be used to reduce computation time
+#pbmc <- JackStraw(pbmc, num.replicate = 100)
+#pbmc <- ScoreJackStraw(pbmc, dims = 1:20)
+ElbowPlot(pbmc)
+```
+
+- Cluster the cells
+```{r Cluster the cells, echo=TRUE}
+pbmc <- FindNeighbors(pbmc, dims = 1:10)
+pbmc <- FindClusters(pbmc, resolution = 0.5)
+# Look at cluster IDs of the first 5 cells
+head(Idents(pbmc), 5)
+```
+- UMAP
+```{r Non-linear dimension reduction, echo=TRUE}
+pbmc <- RunUMAP(pbmc, dims = 1:10)
+# note that you can set `label = TRUE` or use the LabelClusters function to help label
+# individual clusters
+DimPlot(pbmc, reduction = "umap")
+#Save the object to load next time
+#saveRDS(pbmc, file = "../output/pbmc_tutorial.rds")
+```
+- Differential Analysis
+```{r Differential expression analysis Cluster5 Vs Cluster2 , echo=TRUE}
+# find all markers distinguishing cluster 5 from Cluster 2
+cluster5.markers <- FindMarkers(pbmc, ident.1 = 5, ident.2 = 2, min.pct = 0.25)
+head(cluster5.markers, n = 5)
+```
+
+```{r Differential expression analysis each cluster Vs rest of the cells, include=FALSE}
+# find all markers distinguishing every cluster from the rest of the cells,only positive ones
+pbmc.markers.pos <- FindAllMarkers(pbmc, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+pbmc.markers.pos %>%
+    group_by(cluster) %>%
+    slice_max(n = 2, order_by = avg_log2FC)
+```
+
+```{r Differential expression analysis one cluster Vs rest of the cells , echo=TRUE}
+# find all markers distinguishing one cluster from the rest of the cells,only positive ones
+pbmc.markers.cluster5.pos <- FindMarkers(pbmc, ident.1 = 1, ident.2 = NULL, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+# view results
+head(pbmc.markers.cluster5.pos)
+```
+```{r Differential expression analysis of two clusters defined as squares , echo=TRUE}
+# find all markers distinguishing two clusters defined as squares,only positive ones
+CellsMeta = pbmc@meta.data
+CellsMeta$Cells <- row.names(CellsMeta)
+CellsMetaCells <- subset(CellsMeta, select = c("Cells"))
+pbmc <- AddMetaData(pbmc, CellsMetaCells)
+
+cell_coord <- as.data.frame(pbmc[["umap"]]@cell.embeddings)
+cell_coord <- tibble::rownames_to_column(cell_coord, "Cells")
+square <- c(minX1 = -10, maxX1 = -5, minX2 = 5, maxX2 = 10,
+            minY1 = -5, maxY1 = 0, minY2 = 1, maxY2 = 5)
+
+cells1 <- cell_coord %>%
+  filter(UMAP_1 >= square['minX1'] & UMAP_1 <= square['maxX1'] &
+           UMAP_2 >= square['minY1'] & UMAP_2 <= square['maxY1'])
+
+cells2 <- cell_coord %>%
+  filter(UMAP_1 >= square['minX2'] & UMAP_1 <= square['maxX2'] &
+           UMAP_2 >= square['minY2'] & UMAP_2 <= square['maxY2']) 
+
+pbmc.markers.square.pos <- FindMarkers(pbmc, ident.1 = cells1$Cells, 
+                                       ident.2 = cells2$Cells,
+                                       group.by = 'CellsMetaCells',
+                                         only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+# view results
+head(pbmc.markers.square.pos)
+```
+- Pre-filter of samples to increase the speed of DE analysis
+```{r Prefilter features or cells to increase the speed of DE testing , echo=TRUE}
+# Pre-filter features or cells to increase the speed of DE testing
+#counts detected at <50% frequency in either Cluster 5 or Cluster 2
+head(FindMarkers(pbmc, ident.1 = 5, ident.2 = 2, min.pct = 0.5))
+
+# Pre-filter features that have less than a two-fold change between the average expression of Cluster 5 vs Cluster 2
+head(FindMarkers(pbmc, ident.1 = 5, ident.2 = 2, logfc.threshold = log(2)))
+
+# Pre-filter features whose detection percentages across the two clusters are similar (within 0.25)
+head(FindMarkers(pbmc, ident.1 = 5, ident.2 = 2, min.diff.pct = 0.25))
+```
+- Sub-sampling to increase the speed of DE analysis
+```{r Subsample each cluster to increase the speed of DE testing , echo=TRUE}
+# Increasing min.pct, logfc.threshold, and min.diff.pct, will increase the speed of DE testing, but could also miss features that are prefiltered
+
+# Subsample each group to a maximum of 200 cells. Can be very useful for large clusters, or computationally-intensive DE tests
+head(FindMarkers(pbmc, ident.1 = 5, ident.2 = 2, max.cells.per.ident = 200))
+```
+- Approximate search for clustering algorithm to increase the speed
+```{r Cluster the cells using an approximate search, echo=TRUE}
+
+#Speed over accuracy
+pbmc_sce <- as.SingleCellExperiment(pbmc)
+nn.clust <- clusterCells(pbmc_sce, use.dimred="PCA", full=TRUE)
+colLabels(pbmc_sce) <- nn.clust$clusters
+
+snn.gr <- buildSNNGraph(pbmc_sce, BNPARAM=AnnoyParam(), use.dimred="PCA")
+clusters <- igraph::cluster_walktrap(snn.gr)
+table(Exact=colLabels(pbmc_sce), Approx=clusters$membership)
+table(clusters$membership)
+```
+- Singular value decomposition for clustering to increase the speed
+```{r Cluster the cells using Singular value decomposition, echo=TRUE}
+
+#Speed over accuracy
+# As the name suggests, it is random, so we need to set the seed.
+set.seed(101000)
+r.out <- runPCA(pbmc_sce, ncomponents=20, BSPARAM=RandomParam())
+str(reducedDim(r.out))
+
+set.seed(101001)
+i.out <- runPCA(pbmc_sce, ncomponents=20, BSPARAM=IrlbaParam())
+str(reducedDim(i.out))
+```
+- Session Info
+
+```{r Print Session info, echo=TRUE}
+sessionInfo()
+```
